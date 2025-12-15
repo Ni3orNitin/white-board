@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Laser Whiteboard</title>
+    <style>
+        body { 
+            margin: 0; padding: 0; 
+            background-color: #f8f9fa; 
+            font-family: sans-serif;
+            overflow: hidden; 
+            user-select: none;
+        }
+
+        /* --- NEW: SIDEBAR STYLES (Floating on top) --- */
+        .sidebar {
+            position: fixed; top: 0; left: 0; bottom: 0; width: 60px;
+            background: #fff; border-right: 1px solid #ddd;
+            display: flex; flex-direction: column; align-items: center;
+            padding-top: 10px; z-index: 2000; box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+            transition: width 0.2s; overflow-y: auto; overflow-x: hidden;
+        }
+        .sidebar:hover { width: 220px; align-items: flex-start; }
+        
+        .board-list { width: 100%; display: flex; flex-direction: column; align-items: center; }
+        .sidebar:hover .board-list { align-items: stretch; }
+
+        .board-tab {
+            width: 40px; height: 40px; margin: 5px 0;
+            background: #f1f3f5; border-radius: 8px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: 0.2s; font-size: 14px; white-space: nowrap; overflow: hidden;
+            flex-shrink: 0; position: relative;
+        }
+        .sidebar:hover .board-tab { 
+            width: 90%; margin: 5px auto; justify-content: flex-start; padding-left: 10px; 
+        }
+        .board-tab:hover { background: #e9ecef; }
+        .board-tab.active { background: #e7f5ff; border: 2px solid #1971c2; color: #1971c2; }
+        
+        .board-icon { font-size: 18px; min-width: 20px; text-align: center; }
+        .board-name { 
+            opacity: 0; margin-left: 10px; transition: 0.1s; pointer-events: none; 
+            flex-grow: 1; text-overflow: ellipsis; overflow: hidden;
+        }
+        .sidebar:hover .board-name { opacity: 1; pointer-events: auto; }
+
+        .btn-delete-board {
+            display: none; color: red; font-weight: bold; padding: 5px; font-size: 16px; margin-right: 5px;
+        }
+        .sidebar:hover .btn-delete-board { display: block; }
+        .btn-delete-board:hover { background: #ffe3e3; border-radius: 4px; }
+
+        .add-board-btn {
+            background: #40c057; color: white; border: none; width: 40px; height: 40px;
+            border-radius: 50%; font-size: 24px; cursor: pointer; margin-top: 10px;
+            display: flex; align-items: center; justify-content: center; align-self: center;
+            flex-shrink: 0;
+        }
+        .add-board-btn:hover { background: #2f9e44; transform: scale(1.1); }
+
+        /* --- EXISTING CANVAS STYLES (UNCHANGED) --- */
+        canvas { 
+            display: block; 
+            width: 100vw; height: 100vh;
+            background-color: #f8f9fa;
+            background-image: radial-gradient(#d0d0d0 1.5px, transparent 1.5px);
+            background-size: 24px 24px; 
+            cursor: default;
+        }
+
+        .toolbar {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(5px);
+            padding: 8px 16px; border-radius: 16px; 
+            box-shadow: 0 8px 20px rgba(0,0,0,0.1); border: 1px solid rgba(0,0,0,0.05);
+            display: flex; gap: 12px; align-items: center; z-index: 1000;
+        }
+
+        .tool-btn { background: transparent; border: none; cursor: pointer; padding: 10px; border-radius: 8px; font-size: 18px; color: #555; transition: 0.2s; }
+        .tool-btn:hover { background-color: #f1f3f5; }
+        .tool-btn.active { background-color: #e7f5ff; color: #1971c2; }
+        
+        .separator { width:1px; height: 24px; background: #eee; }
+        input[type="range"] { accent-color: #1971c2; cursor: pointer; }
+        input[type="color"] { border: none; width: 32px; height: 32px; cursor: pointer; background: none; }
+
+        /* --- STORAGE METER STYLES --- */
+        .storage-container {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+        }
+        .storage-label { font-size: 10px; color: #888; }
+        .storage-bar-bg {
+            width: 40px; height: 6px; background: #e9ecef; border-radius: 3px; overflow: hidden;
+            border: 1px solid #ced4da;
+        }
+        #storage-bar {
+            height: 100%; width: 0%; background-color: #40c057; transition: width 0.3s, background-color 0.3s;
+        }
+
+        #temp-text-input {
+            position: absolute;
+            z-index: 9999;
+            background-color: rgba(255, 255, 255, 0.95);
+            border: 2px solid #1971c2;
+            padding: 8px;
+            min-width: 150px;
+            min-height: 50px;
+            outline: none;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border-radius: 4px;
+            font-family: sans-serif;
+            font-size: 24px;
+            resize: both;
+            overflow: auto;
+            white-space: pre-wrap; 
+        }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <div id="board-list" class="board-list"></div>
+        <button class="add-board-btn" onclick="addNewBoard()" title="New Board">+</button>
+    </div>
+
+    <input type="file" id="imageLoader" accept="image/png, image/jpeg, image/gif" style="display: none;"/>
+
+    <div class="toolbar">
+        <button class="tool-btn" onclick="saveBoard()" title="Save High-Res Notes">💾</button> 
+        <div class="separator"></div>
+        <button class="tool-btn active" id="btn-select" onclick="setTool('select')" title="Select (V)">👆</button>
+        <button class="tool-btn" id="btn-pan" onclick="setTool('pan')" title="Pan (Space)">✋</button>
+        <div class="separator"></div>
+        <button class="tool-btn" id="btn-text" onclick="setTool('text')" title="Text Tool">T</button>
+        <button class="tool-btn" id="btn-pen" onclick="setTool('pen')" title="Pen (P)">✏️</button>
+        <button class="tool-btn" id="btn-laser" onclick="setTool('laser')" title="Smart Laser">🔦</button>
+        <button class="tool-btn" id="btn-rect" onclick="setTool('rect')" title="Rectangle">⬜</button>
+        <button class="tool-btn" id="btn-eraser" onclick="setTool('eraser')" title="Eraser">⚡</button>
+        <button class="tool-btn" onclick="document.getElementById('imageLoader').click()" title="Add Image">🖼️</button>
+        
+        <div class="separator"></div>
+        <button class="tool-btn" onclick="duplicateSelection()" title="Duplicate (Ctrl+C / Ctrl+V)">📄</button>
+        
+        <div class="separator"></div>
+        <span style="font-size: 14px; color: #888;">🔎</span>
+        <input type="range" id="zoom-slider" min="0.01" max="20.0" step="0.1" value="1.0">
+        
+        <div class="separator"></div>
+        <input type="color" id="color-picker" value="#000000">
+        <input type="range" id="line-width" min="2" max="20" value="3" style="width: 60px;">
+        <button class="tool-btn" style="color: #e03131;" onclick="deleteSelected()">🗑️</button>
+        <button class="tool-btn" style="color: #c92a2a; font-weight: bold;" onclick="clearAllBoard()" title="Wipe Entire Board">❌</button>
+        
+        <div class="separator"></div>
+        <div class="storage-container" title="Local Storage Used">
+            <div class="storage-bar-bg"><div id="storage-bar"></div></div>
+            <span class="storage-label">Storage</span>
+        </div>
+    </div>
+
+    <canvas id="board"></canvas>
+
+    <script>
+        const canvas = document.getElementById('board');
+        const ctx = canvas.getContext('2d');
+        
+        // --- MULTI-BOARD VARIABLES ---
+        let boards = []; 
+        let currentBoardId = null;
+
+        // --- CAMERA STATE ---
+        let cameraOffset = { x: 0, y: 0 };
+        let cameraZoom = 1;
+        const MAX_ZOOM = 20;          
+        const MIN_ZOOM = 0.01;        
+        const SCROLL_SENSITIVITY = 0.01; 
+        
+        // --- APP STATE ---
+        let elements = []; 
+        let currentTool = 'select'; 
+        let isDragging = false;
+        let dragStartPos = {x:0, y:0};
+        let currentDrawingShape = null; 
+        
+        // Selection
+        let selectedElement = null; 
+        let selectedGroup = [];     
+        let resizeHandle = null; 
+        
+        // Drag Select
+        let isSelectingBox = false;
+        let selectionBoxStart = { x: 0, y: 0 };
+        let currentSelectionBox = null;
+
+        // Copy/Paste
+        let clipboard = [];
+
+        // Laser
+        let laserTimer = null;         
+        let activeLaserStrokes = [];   
+        const LASER_TIMEOUT = 3000;    
+
+        const colorPicker = document.getElementById('color-picker');
+        const lineWidthRange = document.getElementById('line-width');
+        const zoomSlider = document.getElementById('zoom-slider');
+
+        function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+        window.addEventListener('resize', resizeCanvas);
+        
+        // --- AUTO LOAD (UPDATED FOR MULTI-BOARD) ---
+        initBoards();
+
+        // --- MULTI-BOARD LOGIC ---
+        function initBoards() {
+            const meta = localStorage.getItem('wb_boards_meta');
+            if(meta) boards = JSON.parse(meta);
+            else boards = [{id: Date.now(), name: "Main Board"}];
+
+            const lastId = localStorage.getItem('wb_last_board');
+            if(lastId && boards.find(b => b.id == lastId)) currentBoardId = parseInt(lastId);
+            else currentBoardId = boards[0].id;
+
+            renderSidebar();
+            loadBoardData(currentBoardId);
+            resizeCanvas();
+        }
+
+        function renderSidebar() {
+            const container = document.getElementById('board-list');
+            container.innerHTML = '';
+            boards.forEach(b => {
+                const el = document.createElement('div');
+                el.className = `board-tab ${b.id === currentBoardId ? 'active' : ''}`;
+                el.onclick = () => switchBoard(b.id);
+                el.ondblclick = (e) => renameBoard(e, b.id);
+                el.innerHTML = `
+                    <span class="board-icon">📝</span>
+                    <span class="board-name">${b.name}</span>
+                    <span class="btn-delete-board" onclick="deleteBoard(event, ${b.id})">✖</span>
+                `;
+                container.appendChild(el);
+            });
+            localStorage.setItem('wb_boards_meta', JSON.stringify(boards));
+            localStorage.setItem('wb_last_board', currentBoardId);
+            updateStorageMeter();
+        }
+
+        function switchBoard(id) {
+            if(id === currentBoardId) return;
+            saveCurrentBoard(); // Save old
+            currentBoardId = id;
+            loadBoardData(id);  // Load new
+            renderSidebar();
+        }
+
+        function addNewBoard() {
+            saveCurrentBoard();
+            const newId = Date.now();
+            boards.push({id: newId, name: `Board ${boards.length + 1}`});
+            currentBoardId = newId;
+            elements = []; cameraOffset = {x:0, y:0}; cameraZoom = 1; zoomSlider.value=1;
+            renderSidebar();
+            render();
+        }
+
+        function deleteBoard(e, id) {
+            e.stopPropagation();
+            if(boards.length <= 1) return alert("You must have at least one board.");
+            if(!confirm("Delete this board?")) return;
+            
+            localStorage.removeItem(`wb_data_${id}`);
+            boards = boards.filter(b => b.id !== id);
+            
+            if(currentBoardId === id) {
+                currentBoardId = boards[0].id;
+                loadBoardData(currentBoardId);
+            }
+            renderSidebar();
+        }
+
+        function renameBoard(e, id) {
+            e.stopPropagation();
+            const name = prompt("Rename board:", "My Board");
+            if(name) {
+                const b = boards.find(b => b.id === id);
+                if(b) b.name = name;
+                renderSidebar();
+            }
+        }
+
+        // --- STORAGE LOGIC ---
+        function saveCurrentBoard() {
+            const safeElements = elements.map(el => {
+                if (el.type === 'image') return { ...el, img: null, imgSrc: el.img.src };
+                return el;
+            });
+            const data = { elements: safeElements, cam: {x: cameraOffset.x, y: cameraOffset.y, z: cameraZoom} };
+            try {
+                localStorage.setItem(`wb_data_${currentBoardId}`, JSON.stringify(data));
+                updateStorageMeter();
+            } catch (e) {
+                alert("Storage Full! Please delete some items or clear the board.");
+            }
+        }
+
+        function loadBoardData(id) {
+            const json = localStorage.getItem(`wb_data_${id}`);
+            if(json) {
+                const data = JSON.parse(json);
+                if(data.cam) { cameraOffset = data.cam; cameraZoom = data.cam.z; zoomSlider.value = cameraZoom; }
+                if(data.elements) {
+                    elements = data.elements.map(el => {
+                        if (el.type === 'image' && el.imgSrc) {
+                            const img = new Image(); img.src = el.imgSrc; img.onload = render;
+                            return { ...el, img: img };
+                        }
+                        return el;
+                    });
+                }
+            } else {
+                elements = []; cameraOffset = {x:0, y:0}; cameraZoom = 1; zoomSlider.value = 1;
+            }
+            render();
+        }
+
+        function updateStorageMeter() {
+            let total = 0;
+            for(let x in localStorage) {
+                if(localStorage.hasOwnProperty(x)) {
+                    total += ((localStorage[x].length + x.length) * 2);
+                }
+            }
+            const limit = 5242880; 
+            const percent = Math.min(100, (total / limit) * 100);
+            
+            const bar = document.getElementById('storage-bar');
+            bar.style.width = percent + '%';
+            
+            if(percent > 90) bar.style.backgroundColor = '#fa5252'; 
+            else if(percent > 70) bar.style.backgroundColor = '#fab005'; 
+            else bar.style.backgroundColor = '#40c057'; 
+        }
+
+        function clearAllBoard() {
+            if(confirm("This will permanently delete all notes on this board. Continue?")) {
+                elements = []; selectedElement = null; selectedGroup = [];
+                saveCurrentBoard();
+                render();
+            }
+        }
+
+        // --- ZOOM & PAN ---
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (e.ctrlKey) {
+                const zoomAmount = -e.deltaY * SCROLL_SENSITIVITY;
+                const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, cameraZoom + zoomAmount));
+                const mouseWorldBefore = getMousePos(e);
+                cameraZoom = newZoom;
+                cameraOffset.x = e.clientX - mouseWorldBefore.x * cameraZoom;
+                cameraOffset.y = e.clientY - mouseWorldBefore.y * cameraZoom;
+                zoomSlider.value = cameraZoom;
+            } else {
+                cameraOffset.x -= e.deltaX;
+                cameraOffset.y -= e.deltaY;
+            }
+            render();
+            saveCurrentBoard(); 
+        }, { passive: false });
+
+        zoomSlider.addEventListener('input', (e) => {
+            const newZoom = parseFloat(e.target.value);
+            const centerBefore = { x: window.innerWidth/2, y: window.innerHeight/2 };
+            const worldCenter = { x: (centerBefore.x - cameraOffset.x)/cameraZoom, y: (centerBefore.y - cameraOffset.y)/cameraZoom };
+            cameraZoom = newZoom;
+            cameraOffset.x = centerBefore.x - worldCenter.x * cameraZoom;
+            cameraOffset.y = centerBefore.y - worldCenter.y * cameraZoom;
+            render();
+            saveCurrentBoard();
+        });
+
+        // --- SHORTCUTS ---
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'TEXTAREA') return; 
+            if ((e.ctrlKey || e.metaKey) && e.key === 'c') performCopy();
+            if ((e.ctrlKey || e.metaKey) && e.key === 'v') performPaste();
+            if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
+            if (e.code === 'Space' && currentTool !== 'pan_temp') {
+                previousTool = currentTool;
+                currentTool = 'pan_temp';
+                canvas.style.cursor = 'grab';
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space' && currentTool === 'pan_temp') {
+                currentTool = previousTool || 'select';
+                setTool(currentTool);
+            }
+        });
+
+        function getMousePos(e) { 
+            return { x: (e.clientX - cameraOffset.x) / cameraZoom, y: (e.clientY - cameraOffset.y) / cameraZoom }; 
+        }
+
+        function setTool(tool) {
+            currentTool = tool;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            const btn = document.getElementById(`btn-${tool}`);
+            if(btn) btn.classList.add('active');
+            const temp = document.getElementById('temp-text-input');
+            if(temp) temp.remove();
+            if (tool === 'pan' || tool === 'pan_temp') canvas.style.cursor = 'grab';
+            else if (tool === 'select') canvas.style.cursor = 'default';
+            else if (tool === 'text') canvas.style.cursor = 'text';
+            else if (tool === 'eraser') canvas.style.cursor = 'not-allowed';
+            else canvas.style.cursor = 'crosshair';
+            if(tool !== 'select') { selectedElement = null; selectedGroup = []; render(); }
+        }
+
+        // --- RENDER ---
+        function render() {
+            ctx.setTransform(1, 0, 0, 1, 0, 0); 
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            canvas.style.backgroundPosition = `${cameraOffset.x}px ${cameraOffset.y}px`;
+            canvas.style.backgroundSize = `${24 * cameraZoom}px ${24 * cameraZoom}px`;
+            ctx.translate(cameraOffset.x, cameraOffset.y);
+            ctx.scale(cameraZoom, cameraZoom);
+            elements.forEach(el => drawElement(el, ctx));
+            if (currentDrawingShape) drawElement(currentDrawingShape, ctx);
+            if (selectedElement && currentTool === 'select') drawSelectionBox(selectedElement);
+            if (selectedGroup.length > 0 && currentTool === 'select') drawGroupSelectionBox(selectedGroup);
+            if (isSelectingBox && currentSelectionBox) drawDragSelectionBox();
+        }
+
+        function wrapText(context, text, x, y, maxWidth, lineHeight) {
+            const paragraphs = text.split('\n');
+            let currentY = y;
+            paragraphs.forEach(paragraph => {
+                const words = paragraph.split(' ');
+                let line = '';
+                for(let n = 0; n < words.length; n++) {
+                    const testLine = line + words[n] + ' ';
+                    const metrics = context.measureText(testLine);
+                    if (metrics.width > maxWidth && n > 0) {
+                        context.fillText(line, x, currentY);
+                        line = words[n] + ' ';
+                        currentY += lineHeight;
+                    } else { line = testLine; }
+                }
+                context.fillText(line, x, currentY);
+                currentY += lineHeight;
+            });
+        }
+
+        function drawElement(el, context) {
+            context.globalAlpha = el.opacity !== undefined ? el.opacity : 1.0;
+            context.beginPath();
+            if (el.type === 'text') {
+                context.font = `${el.size || 24}px sans-serif`; 
+                context.fillStyle = el.color;
+                context.textBaseline = "top";
+                wrapText(context, el.text, el.x, el.y, el.w, 30); 
+            }
+            else if(el.type === 'pen' || el.type === 'rect' || el.type === 'laser') {
+                context.lineWidth = el.width;
+                context.lineCap = 'round';
+                context.strokeStyle = el.type === 'laser' ? 'red' : el.color;
+                context.shadowBlur = (el.type === 'laser') ? 10 : 0;
+                context.shadowColor = 'red';
+                if (el.type === 'pen' || el.type === 'laser') {
+                    context.moveTo(el.points[0].x, el.points[0].y);
+                    for (let i = 1; i < el.points.length; i++) context.lineTo(el.points[i].x, el.points[i].y);
+                    context.stroke();
+                } else if (el.type === 'rect') {
+                    context.rect(el.x, el.y, el.w, el.h);
+                    context.stroke();
+                }
+            } else if (el.type === 'image') {
+                context.shadowBlur = 0;
+                if(el.img) context.drawImage(el.img, el.x, el.y, el.w, el.h);
+            }
+            context.shadowBlur = 0;
+            context.globalAlpha = 1.0; 
+        }
+
+        function drawSelectionBox(el) {
+            const s = 12 / cameraZoom; const lw = 2 / cameraZoom;
+            ctx.strokeStyle = '#1971c2'; ctx.lineWidth = lw;
+            const pad = el.type === 'text' ? 5 : 0;
+            ctx.setLineDash([5, 5]); ctx.strokeRect(el.x-pad, el.y-pad, el.w+(pad*2), el.h+(pad*2)); ctx.setLineDash([]); 
+            ctx.fillStyle = 'white'; ctx.strokeStyle = '#1971c2';
+            const drawH = (x,y) => { ctx.beginPath(); ctx.arc(x, y, s/2, 0, 2*Math.PI); ctx.fill(); ctx.stroke(); }
+            const bx = el.x-pad; const by = el.y-pad; const bw = el.w+(pad*2); const bh = el.h+(pad*2);
+            drawH(bx, by); drawH(bx+bw, by); drawH(bx, by+bh); drawH(bx+bw, by+bh);
+        }
+
+        function drawGroupSelectionBox(group) {
+            const box = getGroupBoundingBox(group);
+            ctx.strokeStyle = '#1971c2'; ctx.lineWidth = 2/cameraZoom;
+            ctx.setLineDash([5, 5]); ctx.strokeRect(box.x, box.y, box.w, box.h); ctx.setLineDash([]);
+        }
+
+        function drawDragSelectionBox() {
+            ctx.fillStyle = "rgba(25, 113, 194, 0.1)";
+            ctx.strokeStyle = "#1971c2"; ctx.lineWidth = 1 / cameraZoom; ctx.setLineDash([]);
+            ctx.fillRect(currentSelectionBox.x, currentSelectionBox.y, currentSelectionBox.w, currentSelectionBox.h);
+            ctx.strokeRect(currentSelectionBox.x, currentSelectionBox.y, currentSelectionBox.w, currentSelectionBox.h);
+        }
+
+        function getGroupBoundingBox(group) {
+            let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+            group.forEach(el => {
+                if(el.x < minX) minX = el.x; if(el.y < minY) minY = el.y;
+                if(el.x + el.w > maxX) maxX = el.x + el.w; if(el.y + el.h > maxY) maxY = el.y + el.h;
+            });
+            const pad = 10;
+            return { x: minX-pad, y: minY-pad, w: (maxX-minX)+pad*2, h: (maxY-minY)+pad*2 };
+        }
+
+        // --- COPY & PASTE ---
+        function deepCloneElement(el) {
+            const clone = { ...el };
+            if(el.points) clone.points = el.points.map(p => ({x: p.x, y: p.y}));
+            if(el.type === 'image') clone.img = el.img; 
+            return clone;
+        }
+        function performCopy() {
+            clipboard = [];
+            if(selectedElement) clipboard.push(deepCloneElement(selectedElement));
+            else if(selectedGroup.length > 0) clipboard = selectedGroup.map(el => deepCloneElement(el));
+        }
+        function performPaste() {
+            if(clipboard.length === 0) return;
+            const offset = 30 / cameraZoom;
+            const newElements = clipboard.map(el => {
+                const clone = deepCloneElement(el);
+                clone.x += offset; clone.y += offset;
+                if(clone.points) clone.points.forEach(p => { p.x += offset; p.y += offset; });
+                elements.push(clone); return clone;
+            });
+            if(newElements.length === 1) { selectedElement = newElements[0]; selectedGroup = []; }
+            else { selectedElement = null; selectedGroup = newElements; }
+            clipboard = newElements.map(el => deepCloneElement(el));
+            saveCurrentBoard(); render();
+        }
+        function duplicateSelection() { performCopy(); performPaste(); }
+
+        // --- INTERACTION ---
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 1 || currentTool === 'pan' || currentTool === 'pan_temp') {
+                isDragging = true; dragStartPos = { x: e.clientX, y: e.clientY }; canvas.style.cursor = 'grabbing';
+                if(currentTool !== 'pan') { previousTool = currentTool; currentTool = 'pan_temp'; }
+                return;
+            }
+            if (currentTool === 'text') return; 
+            isDragging = true; const m = getMousePos(e); dragStartPos = {x: m.x, y: m.y}; 
+            if (currentTool === 'select') {
+                if(selectedElement) { resizeHandle = getHitHandle(selectedElement, m.x, m.y); if(resizeHandle) return; }
+                if (selectedGroup.length > 0) {
+                    const box = getGroupBoundingBox(selectedGroup);
+                    if (m.x >= box.x && m.x <= box.x + box.w && m.y >= box.y && m.y <= box.y + box.h) return;
+                }
+                const hit = findElementUnderMouse(m.x, m.y);
+                if (hit) {
+                    if (hit.type === 'text' || hit.type === 'image' || hit.type === 'rect') { selectedGroup = []; selectedElement = hit; } 
+                    else { selectedElement = null; selectedGroup = [hit]; }
+                    elements = elements.filter(el => el !== hit); elements.push(hit); render(); return;
+                }
+                selectedElement = null; selectedGroup = [];
+                isSelectingBox = true; selectionBoxStart = { x: m.x, y: m.y }; currentSelectionBox = { x: m.x, y: m.y, w: 0, h: 0 };
+                render(); return;
+            }
+            if (currentTool === 'eraser') { deleteShapeAt(m.x, m.y); return; }
+            if (currentTool === 'pen' || currentTool === 'laser') {
+                currentDrawingShape = { type: currentTool, points: [{x: m.x, y: m.y}], color: colorPicker.value, width: lineWidthRange.value, opacity: 1.0 };
+                if (currentTool === 'laser') clearTimeout(laserTimer);
+            } else if (currentTool === 'rect') {
+                currentDrawingShape = { type: 'rect', x: m.x, y: m.y, w: 0, h: 0, color: colorPicker.value, width: lineWidthRange.value };
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if ((currentTool === 'pan' || currentTool === 'pan_temp') && isDragging) {
+                cameraOffset.x += e.clientX - dragStartPos.x; cameraOffset.y += e.clientY - dragStartPos.y;
+                dragStartPos = { x: e.clientX, y: e.clientY }; render(); return;
+            }
+            const m = getMousePos(e);
+            if(currentTool === 'select' && selectedElement && !isDragging) {
+                const h = getHitHandle(selectedElement, m.x, m.y); canvas.style.cursor = h ? 'pointer' : 'default';
+            }
+            if (!isDragging) return;
+            const dx = m.x - dragStartPos.x; const dy = m.y - dragStartPos.y;
+            if (currentTool === 'select') {
+                if (isSelectingBox) { currentSelectionBox.w = m.x - selectionBoxStart.x; currentSelectionBox.h = m.y - selectionBoxStart.y; render(); return; }
+                if (selectedGroup.length > 0) {
+                    selectedGroup.forEach(el => { el.x += dx; el.y += dy; if(el.points) el.points.forEach(p => { p.x += dx; p.y += dy; }); });
+                    dragStartPos = {x: m.x, y: m.y}; render(); return;
+                }
+                if (selectedElement) {
+                    if(resizeHandle) {
+                        const min = 20;
+                        if(resizeHandle==='br'){selectedElement.w=Math.max(min,selectedElement.w+dx);selectedElement.h=Math.max(min,selectedElement.h+dy);}
+                        else if(resizeHandle==='bl'){const nw=selectedElement.w-dx;if(nw>min){selectedElement.x+=dx;selectedElement.w=nw;}selectedElement.h=Math.max(min,selectedElement.h+dy);}
+                        else if(resizeHandle==='tr'){const nh=selectedElement.h-dy;if(nh>min){selectedElement.y+=dy;selectedElement.h=nh;}selectedElement.w=Math.max(min,selectedElement.w+dx);}
+                        else if(resizeHandle==='tl'){const nw=selectedElement.w-dx;const nh=selectedElement.h-dy;if(nw>min){selectedElement.x+=dx;selectedElement.w=nw;}if(nh>min){selectedElement.y+=dy;selectedElement.h=nh;}}
+                    } else { selectedElement.x += dx; selectedElement.y += dy; }
+                    dragStartPos = {x: m.x, y: m.y}; render(); return;
+                }
+            }
+            if (currentTool === 'eraser') { deleteShapeAt(m.x, m.y); return; }
+            if (currentTool === 'pen' || currentTool === 'laser') currentDrawingShape.points.push({x: m.x, y: m.y});
+            else if (currentTool === 'rect') { currentDrawingShape.w = m.x - currentDrawingShape.x; currentDrawingShape.h = m.y - currentDrawingShape.y; }
+            render();
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDragging = false;
+            if (isSelectingBox) {
+                isSelectingBox = false;
+                const bx = currentSelectionBox.w > 0 ? currentSelectionBox.x : currentSelectionBox.x + currentSelectionBox.w;
+                const by = currentSelectionBox.h > 0 ? currentSelectionBox.y : currentSelectionBox.y + currentSelectionBox.h;
+                const bw = Math.abs(currentSelectionBox.w); const bh = Math.abs(currentSelectionBox.h);
+                selectedGroup = elements.filter(el => {
+                    if (el.type !== 'pen' && el.type !== 'laser') return false; 
+                    const cx = el.x + el.w/2; const cy = el.y + el.h/2;
+                    return (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh);
+                });
+                currentSelectionBox = null; render(); return;
+            }
+            if(currentTool === 'pan_temp') { currentTool = previousTool || 'select'; setTool(currentTool); saveCurrentBoard(); }
+            if(currentTool === 'pan') { canvas.style.cursor = 'grab'; saveCurrentBoard(); }
+            resizeHandle = null;
+            if(currentDrawingShape) {
+                if(currentDrawingShape.type === 'rect' && Math.abs(currentDrawingShape.w) < 5) return;
+                const finalShape = currentDrawingShape;
+                if(finalShape.type === 'pen' || finalShape.type === 'laser') {
+                    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+                    finalShape.points.forEach(p => { if(p.x < minX) minX = p.x; if(p.x > maxX) maxX = p.x; if(p.y < minY) minY = p.y; if(p.y > maxY) maxY = p.y; });
+                    finalShape.x = minX; finalShape.y = minY; finalShape.w = maxX - minX; finalShape.h = maxY - minY;
+                }
+                elements.push(finalShape);
+                if (finalShape.type === 'laser') {
+                    activeLaserStrokes.push(finalShape); clearTimeout(laserTimer);
+                    laserTimer = setTimeout(startFadingGroup, LASER_TIMEOUT);
+                }
+                currentDrawingShape = null; saveCurrentBoard(); render();
+            } else if (currentTool === 'select') { saveCurrentBoard(); }
+        });
+
+        // --- HELPERS ---
+        function deleteShapeAt(x, y) {
+             for (let i = elements.length - 1; i >= 0; i--) {
+                const el = elements[i];
+                if(el.type === 'image' || el.type === 'text') continue; 
+                let hit = false;
+                if (el.type === 'rect') hit = (x >= el.x && x <= el.x + el.w && y >= el.y && y <= el.y + el.h);
+                else if (el.type === 'pen' || el.type === 'laser') hit = el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom);
+                if (hit) { elements.splice(i, 1); saveCurrentBoard(); render(); break; }
+            }
+        }
+        function deleteSelected() {
+            if (selectedElement) { elements = elements.filter(el => el !== selectedElement); selectedElement = null; }
+            if (selectedGroup.length > 0) { elements = elements.filter(el => !selectedGroup.includes(el)); selectedGroup = []; }
+            saveCurrentBoard(); render();
+        }
+        function findElementUnderMouse(x, y) {
+            for (let i = elements.length - 1; i >= 0; i--) {
+                const el = elements[i];
+                if(el.points) { if (el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom)) return el; } 
+                else { const pad = (el.type === 'text') ? 5 : 0; if (x >= el.x-pad && x <= el.x + el.w+pad && y >= el.y-pad && y <= el.y + el.h+pad) return el; }
+            } return null;
+        }
+        function getHitHandle(el, x, y) {
+            if(el.type === 'pen' || el.type === 'laser') return null;
+            const pad = 5; const s = 15 / cameraZoom; const bx = el.x-pad; const by = el.y-pad; const bw = el.w+(pad*2); const bh = el.h+(pad*2);
+            if(x>=bx-s && x<=bx+s && y>=by-s && y<=by+s) return 'tl'; if(x>=bx+bw-s && x<=bx+bw+s && y>=by-s && y<=by+s) return 'tr';
+            if(x>=bx-s && x<=bx+s && y>=by+bh-s && y<=by+bh+s) return 'bl'; if(x>=bx+bw-s && x<=bx+bw+s && y>=by+bh-s && y<=by+bh+s) return 'br';
+            return null;
+        }
+        function startFadingGroup() {
+            const strokes = [...activeLaserStrokes]; activeLaserStrokes = [];
+            function step() {
+                let visible = false; strokes.forEach(s => { s.opacity -= 0.02; if(s.opacity > 0) visible = true; });
+                render(); if(visible) requestAnimationFrame(step); else { elements = elements.filter(el => !strokes.includes(el)); render(); }
+            } step();
+        }
+
+        // --- TEXT INPUT ---
+        canvas.addEventListener('click', (e) => { if (currentTool === 'text') spawnTextInput(e.clientX, e.clientY, "", 200, 100, colorPicker.value); });
+        canvas.addEventListener('dblclick', (e) => {
+            const m = getMousePos(e); const hit = findElementUnderMouse(m.x, m.y);
+            if (hit && hit.type === 'text') {
+                elements = elements.filter(el => el !== hit); render();
+                const screenX = (hit.x * cameraZoom) + cameraOffset.x; const screenY = (hit.y * cameraZoom) + cameraOffset.y;
+                spawnTextInput(screenX, screenY, hit.text, hit.w * cameraZoom, hit.h * cameraZoom, hit.color);
+            }
+        });
+        function spawnTextInput(screenX, screenY, initialText, w, h, color) {
+            const temp = document.getElementById('temp-text-input'); if(temp) temp.remove();
+            const input = document.createElement('textarea'); input.id = 'temp-text-input';
+            input.style.left = screenX + 'px'; input.style.top = screenY + 'px';
+            input.style.width = (w || 200) + "px"; input.style.height = (h || 100) + "px";
+            input.style.color = color; input.value = initialText;
+            document.body.appendChild(input); setTimeout(() => input.focus(), 10);
+            const m = getMousePos({clientX: screenX, clientY: screenY});
+            const save = () => {
+                if(input.value.trim() !== "") {
+                    elements.push({ type: 'text', text: input.value, x: m.x, y: m.y, color: color, w: parseInt(input.style.width), h: parseInt(input.style.height), size: 24 });
+                    saveCurrentBoard(); render();
+                } if(input.parentNode) input.remove();
+            };
+            input.addEventListener('blur', save); input.addEventListener('click', (ev) => ev.stopPropagation());
+        }
+
+        // --- SMART MAX QUALITY SAVE ---
+        function saveBoard() {
+            if (elements.length === 0) return alert("Empty board!");
+            let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+            elements.forEach(el => {
+                if(el.type === 'pen' || el.type === 'laser') { if(el.points) el.points.forEach(p=>{ if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x; if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y; }); } 
+                else { if(el.x < minX) minX = el.x; if(el.y < minY) minY = el.y; if(el.x+el.w > maxX) maxX = el.x+el.w; if(el.y+el.h > maxY) maxY = el.y+el.h; }
+            });
+            if(minX === Infinity) { minX=0; maxX=100; minY=0; maxY=100; }
+            const pad = 50; const w = (maxX - minX) + pad*2; const h = (maxY - minY) + pad*2;
+            
+            // Smart Scale Logic
+            const MAX_PIXELS = 10000 * 10000; // 100MP Limit
+            const MAX_DIM = 16000; // Browser Limit
+            let scale = 4; // Target Ultra HD
+            while ((w * scale > MAX_DIM || h * scale > MAX_DIM || (w * scale * h * scale) > MAX_PIXELS) && scale > 1) {
+                scale -= 0.5; // Step down if too big
+            }
+
+            const tCanvas = document.createElement('canvas');
+            tCanvas.width = w * scale; tCanvas.height = h * scale; 
+            const tCtx = tCanvas.getContext('2d');
+            tCtx.scale(scale, scale); tCtx.translate(-(minX-pad), -(minY-pad));
+            tCtx.fillStyle = 'white'; tCtx.fillRect(minX-pad, minY-pad, w, h);
+            elements.forEach(el => drawElement(el, tCtx));
+            const link = document.createElement('a'); link.download = 'whiteboard.png'; link.href = tCanvas.toDataURL(); link.click();
+        }
+
+        document.getElementById('imageLoader').addEventListener('change', (e) => {
+            const r = new FileReader(); r.onload = (evt) => {
+                const img = new Image(); img.onload = () => {
+                    const scale = Math.min(500/img.width, 1);
+                    const cx = (-cameraOffset.x + window.innerWidth/2)/cameraZoom; const cy = (-cameraOffset.y + window.innerHeight/2)/cameraZoom;
+                    elements.push({type: 'image', img: img, x: cx-100, y: cy-100, w: img.width*scale, h: img.height*scale});
+                    saveCurrentBoard(); setTool('select');
+                }; img.src = evt.target.result;
+            }; r.readAsDataURL(e.target.files[0]); e.target.value = '';
+        });
+        function clearAll() { elements = []; selectedElement = null; selectedGroup = []; render(); }
+        setTool('select');
+    </script>
+</body>
+</html>
