@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Laser Whiteboard</title>
+    <title>Smart Laser Whiteboard - Auto Expanding Text</title>
     <style>
         body { 
             margin: 0; padding: 0; 
@@ -13,7 +13,14 @@
             user-select: none;
         }
 
-        /* --- NEW: SIDEBAR STYLES (Floating on top) --- */
+        /* --- DRAG OVERLAY INDICATOR --- */
+        body.drag-active canvas {
+            border: 4px dashed #1971c2;
+            box-sizing: border-box;
+            background-color: rgba(231, 245, 255, 0.5);
+        }
+
+        /* --- SIDEBAR STYLES --- */
         .sidebar {
             position: fixed; top: 0; left: 0; bottom: 0; width: 60px;
             background: #fff; border-right: 1px solid #ddd;
@@ -60,7 +67,7 @@
         }
         .add-board-btn:hover { background: #2f9e44; transform: scale(1.1); }
 
-        /* --- EXISTING CANVAS STYLES (UNCHANGED) --- */
+        /* --- CANVAS STYLES --- */
         canvas { 
             display: block; 
             width: 100vw; height: 100vh;
@@ -68,6 +75,7 @@
             background-image: radial-gradient(#d0d0d0 1.5px, transparent 1.5px);
             background-size: 24px 24px; 
             cursor: default;
+            transform: translateZ(0);
         }
 
         .toolbar {
@@ -99,22 +107,29 @@
             height: 100%; width: 0%; background-color: #40c057; transition: width 0.3s, background-color 0.3s;
         }
 
+        /* --- NEW INPUT BOX STYLES --- */
         #temp-text-input {
             position: absolute;
             z-index: 9999;
             background-color: rgba(255, 255, 255, 0.95);
-            border: 2px solid #1971c2;
+            border: 2px dashed #1971c2;
             padding: 8px;
-            min-width: 150px;
-            min-height: 50px;
+            
+            /* GROWTH LOGIC */
+            min-width: 50px;
+            max-width: 500px;  /* Stops growing right at 500px, then wraps */
+            width: fit-content;
+            height: auto;
+            
             outline: none;
             box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             border-radius: 4px;
             font-family: sans-serif;
-            font-size: 24px;
-            resize: both;
-            overflow: auto;
-            white-space: pre-wrap; 
+            font-size: 16px; 
+            white-space: pre-wrap; /* Preserve spaces and line breaks */
+            overflow: hidden; 
+            line-height: 1.2;
+            color: #000;
         }
     </style>
 </head>
@@ -135,6 +150,7 @@
         <div class="separator"></div>
         <button class="tool-btn" id="btn-text" onclick="setTool('text')" title="Text Tool">T</button>
         <button class="tool-btn" id="btn-pen" onclick="setTool('pen')" title="Pen (P)">✏️</button>
+        <button class="tool-btn" id="btn-arrow" onclick="setTool('arrow')" title="Doodle Arrow">↘️</button>
         <button class="tool-btn" id="btn-laser" onclick="setTool('laser')" title="Smart Laser">🔦</button>
         <button class="tool-btn" id="btn-rect" onclick="setTool('rect')" title="Rectangle">⬜</button>
         <button class="tool-btn" id="btn-eraser" onclick="setTool('eraser')" title="Eraser">⚡</button>
@@ -164,7 +180,7 @@
 
     <script>
         const canvas = document.getElementById('board');
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { alpha: false }); 
         
         // --- MULTI-BOARD VARIABLES ---
         let boards = []; 
@@ -175,7 +191,7 @@
         let cameraZoom = 1;
         const MAX_ZOOM = 20;          
         const MIN_ZOOM = 0.01;        
-        const SCROLL_SENSITIVITY = 0.01; 
+        const SCROLL_SENSITIVITY = 0.005;
         
         // --- APP STATE ---
         let elements = []; 
@@ -202,25 +218,54 @@
         let activeLaserStrokes = [];   
         const LASER_TIMEOUT = 3000;    
 
+        // Optimization
+        let isRenderPending = false;
+        let saveTimeout = null;
+
         const colorPicker = document.getElementById('color-picker');
         const lineWidthRange = document.getElementById('line-width');
         const zoomSlider = document.getElementById('zoom-slider');
 
-        function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+        function resizeCanvas() { 
+            canvas.width = window.innerWidth; 
+            canvas.height = window.innerHeight; 
+            scheduleRender(); 
+        }
         window.addEventListener('resize', resizeCanvas);
         
-        // --- AUTO LOAD (UPDATED FOR MULTI-BOARD) ---
+        // --- AUTO LOAD ---
         initBoards();
+
+        // --- OPTIMIZATION FUNCTIONS ---
+        function scheduleRender() {
+            if (!isRenderPending) {
+                isRenderPending = true;
+                requestAnimationFrame(() => {
+                    render();
+                    isRenderPending = false;
+                });
+            }
+        }
+
+        function triggerSave() {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(saveCurrentBoard, 1000); 
+        }
 
         // --- MULTI-BOARD LOGIC ---
         function initBoards() {
-            const meta = localStorage.getItem('wb_boards_meta');
-            if(meta) boards = JSON.parse(meta);
-            else boards = [{id: Date.now(), name: "Main Board"}];
+            try {
+                const meta = localStorage.getItem('wb_boards_meta');
+                if(meta) boards = JSON.parse(meta);
+                else boards = [{id: Date.now(), name: "Main Board"}];
 
-            const lastId = localStorage.getItem('wb_last_board');
-            if(lastId && boards.find(b => b.id == lastId)) currentBoardId = parseInt(lastId);
-            else currentBoardId = boards[0].id;
+                const lastId = localStorage.getItem('wb_last_board');
+                if(lastId && boards.find(b => b.id == lastId)) currentBoardId = parseInt(lastId);
+                else currentBoardId = boards[0].id;
+            } catch(e) {
+                boards = [{id: Date.now(), name: "Main Board"}];
+                currentBoardId = boards[0].id;
+            }
 
             renderSidebar();
             loadBoardData(currentBoardId);
@@ -242,16 +287,18 @@
                 `;
                 container.appendChild(el);
             });
-            localStorage.setItem('wb_boards_meta', JSON.stringify(boards));
-            localStorage.setItem('wb_last_board', currentBoardId);
-            updateStorageMeter();
+            try {
+                localStorage.setItem('wb_boards_meta', JSON.stringify(boards));
+                localStorage.setItem('wb_last_board', currentBoardId);
+                updateStorageMeter();
+            } catch(e) {}
         }
 
         function switchBoard(id) {
             if(id === currentBoardId) return;
-            saveCurrentBoard(); // Save old
+            saveCurrentBoard(); 
             currentBoardId = id;
-            loadBoardData(id);  // Load new
+            loadBoardData(id); 
             renderSidebar();
         }
 
@@ -262,17 +309,15 @@
             currentBoardId = newId;
             elements = []; cameraOffset = {x:0, y:0}; cameraZoom = 1; zoomSlider.value=1;
             renderSidebar();
-            render();
+            scheduleRender();
         }
 
         function deleteBoard(e, id) {
             e.stopPropagation();
-            if(boards.length <= 1) return alert("You must have at least one board.");
+            if(boards.length <= 1) return;
             if(!confirm("Delete this board?")) return;
-            
             localStorage.removeItem(`wb_data_${id}`);
             boards = boards.filter(b => b.id !== id);
-            
             if(currentBoardId === id) {
                 currentBoardId = boards[0].id;
                 loadBoardData(currentBoardId);
@@ -300,54 +345,54 @@
             try {
                 localStorage.setItem(`wb_data_${currentBoardId}`, JSON.stringify(data));
                 updateStorageMeter();
-            } catch (e) {
-                alert("Storage Full! Please delete some items or clear the board.");
-            }
+            } catch (e) {}
         }
 
         function loadBoardData(id) {
-            const json = localStorage.getItem(`wb_data_${id}`);
-            if(json) {
-                const data = JSON.parse(json);
-                if(data.cam) { cameraOffset = data.cam; cameraZoom = data.cam.z; zoomSlider.value = cameraZoom; }
-                if(data.elements) {
-                    elements = data.elements.map(el => {
-                        if (el.type === 'image' && el.imgSrc) {
-                            const img = new Image(); img.src = el.imgSrc; img.onload = render;
-                            return { ...el, img: img };
-                        }
-                        return el;
-                    });
+            try {
+                const json = localStorage.getItem(`wb_data_${id}`);
+                if(json) {
+                    const data = JSON.parse(json);
+                    if(data.cam) { cameraOffset = data.cam; cameraZoom = data.cam.z; zoomSlider.value = cameraZoom; }
+                    if(data.elements) {
+                        elements = data.elements.map(el => {
+                            if (el.type === 'image' && el.imgSrc) {
+                                const img = new Image(); img.src = el.imgSrc; img.onload = scheduleRender;
+                                return { ...el, img: img };
+                            }
+                            return el;
+                        });
+                    }
+                } else {
+                    elements = []; cameraOffset = {x:0, y:0}; cameraZoom = 1; zoomSlider.value = 1;
                 }
-            } else {
-                elements = []; cameraOffset = {x:0, y:0}; cameraZoom = 1; zoomSlider.value = 1;
-            }
-            render();
+            } catch(e) { elements = []; }
+            scheduleRender();
         }
 
         function updateStorageMeter() {
-            let total = 0;
-            for(let x in localStorage) {
-                if(localStorage.hasOwnProperty(x)) {
-                    total += ((localStorage[x].length + x.length) * 2);
+            try {
+                let total = 0;
+                for(let x in localStorage) {
+                    if(localStorage.hasOwnProperty(x)) {
+                        total += ((localStorage[x].length + x.length) * 2);
+                    }
                 }
-            }
-            const limit = 5242880; 
-            const percent = Math.min(100, (total / limit) * 100);
-            
-            const bar = document.getElementById('storage-bar');
-            bar.style.width = percent + '%';
-            
-            if(percent > 90) bar.style.backgroundColor = '#fa5252'; 
-            else if(percent > 70) bar.style.backgroundColor = '#fab005'; 
-            else bar.style.backgroundColor = '#40c057'; 
+                const limit = 5242880; 
+                const percent = Math.min(100, (total / limit) * 100);
+                const bar = document.getElementById('storage-bar');
+                bar.style.width = percent + '%';
+                if(percent > 90) bar.style.backgroundColor = '#fa5252'; 
+                else if(percent > 70) bar.style.backgroundColor = '#fab005'; 
+                else bar.style.backgroundColor = '#40c057'; 
+            } catch(e) {}
         }
 
         function clearAllBoard() {
             if(confirm("This will permanently delete all notes on this board. Continue?")) {
                 elements = []; selectedElement = null; selectedGroup = [];
-                saveCurrentBoard();
-                render();
+                triggerSave();
+                scheduleRender();
             }
         }
 
@@ -366,8 +411,8 @@
                 cameraOffset.x -= e.deltaX;
                 cameraOffset.y -= e.deltaY;
             }
-            render();
-            saveCurrentBoard(); 
+            scheduleRender(); 
+            triggerSave();   
         }, { passive: false });
 
         zoomSlider.addEventListener('input', (e) => {
@@ -377,13 +422,13 @@
             cameraZoom = newZoom;
             cameraOffset.x = centerBefore.x - worldCenter.x * cameraZoom;
             cameraOffset.y = centerBefore.y - worldCenter.y * cameraZoom;
-            render();
-            saveCurrentBoard();
+            scheduleRender();
+            triggerSave();
         });
 
         // --- SHORTCUTS ---
         window.addEventListener('keydown', (e) => {
-            if (e.target.tagName === 'TEXTAREA') return; 
+            if (e.target.getAttribute('contenteditable') === 'true') return; // Ignore if editing text
             if ((e.ctrlKey || e.metaKey) && e.key === 'c') performCopy();
             if ((e.ctrlKey || e.metaKey) && e.key === 'v') performPaste();
             if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
@@ -417,18 +462,32 @@
             else if (tool === 'text') canvas.style.cursor = 'text';
             else if (tool === 'eraser') canvas.style.cursor = 'not-allowed';
             else canvas.style.cursor = 'crosshair';
-            if(tool !== 'select') { selectedElement = null; selectedGroup = []; render(); }
+            if(tool !== 'select') { selectedElement = null; selectedGroup = []; scheduleRender(); }
         }
 
         // --- RENDER ---
         function render() {
             ctx.setTransform(1, 0, 0, 1, 0, 0); 
+            ctx.fillStyle = "#f8f9fa";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+
             canvas.style.backgroundPosition = `${cameraOffset.x}px ${cameraOffset.y}px`;
             canvas.style.backgroundSize = `${24 * cameraZoom}px ${24 * cameraZoom}px`;
+            
             ctx.translate(cameraOffset.x, cameraOffset.y);
             ctx.scale(cameraZoom, cameraZoom);
-            elements.forEach(el => drawElement(el, ctx));
+            
+            // --- LAYER 1: IMAGES (ALWAYS BEHIND) ---
+            elements.forEach(el => {
+                if(el.type === 'image') drawElement(el, ctx);
+            });
+
+            // --- LAYER 2: EVERYTHING ELSE (Text, Pen, Arrows, Rects) ---
+            elements.forEach(el => {
+                if(el.type !== 'image') drawElement(el, ctx);
+            });
+            
             if (currentDrawingShape) drawElement(currentDrawingShape, ctx);
             if (selectedElement && currentTool === 'select') drawSelectionBox(selectedElement);
             if (selectedGroup.length > 0 && currentTool === 'select') drawGroupSelectionBox(selectedGroup);
@@ -454,30 +513,61 @@
                 currentY += lineHeight;
             });
         }
-
+        
         function drawElement(el, context) {
             context.globalAlpha = el.opacity !== undefined ? el.opacity : 1.0;
             context.beginPath();
             if (el.type === 'text') {
-                context.font = `${el.size || 24}px sans-serif`; 
+                const size = el.size || 16; 
+                context.font = `${size}px sans-serif`; 
                 context.fillStyle = el.color;
                 context.textBaseline = "top";
-                wrapText(context, el.text, el.x, el.y, el.w, 30); 
+                wrapText(context, el.text, el.x, el.y, el.w, size * 1.2); 
             }
-            else if(el.type === 'pen' || el.type === 'rect' || el.type === 'laser') {
+            else if(el.type === 'pen' || el.type === 'rect' || el.type === 'laser' || el.type === 'arrow') {
                 context.lineWidth = el.width;
                 context.lineCap = 'round';
+                context.lineJoin = 'round'; 
                 context.strokeStyle = el.type === 'laser' ? 'red' : el.color;
                 context.shadowBlur = (el.type === 'laser') ? 10 : 0;
                 context.shadowColor = 'red';
-                if (el.type === 'pen' || el.type === 'laser') {
+                
+                if (el.type === 'pen' || el.type === 'laser' || el.type === 'arrow') {
+                    if(el.points.length < 1) return;
                     context.moveTo(el.points[0].x, el.points[0].y);
                     for (let i = 1; i < el.points.length; i++) context.lineTo(el.points[i].x, el.points[i].y);
                     context.stroke();
+                    
+                    // DOODLE ARROW HEAD LOGIC (STICK ARROW -> with 70% size)
+                    if (el.type === 'arrow' && el.points.length > 1) {
+                        const last = el.points[el.points.length - 1];
+                        const prevIndex = Math.max(0, el.points.length - 5);
+                        const prev = el.points[prevIndex];
+                        
+                        const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+                        const headLen = 14; 
+
+                        context.beginPath();
+                        context.lineWidth = el.width;
+                        context.lineCap = 'round';
+                        context.strokeStyle = el.color;
+
+                        // Wing 1
+                        context.moveTo(last.x, last.y);
+                        context.lineTo(last.x - headLen * Math.cos(angle - Math.PI / 6), last.y - headLen * Math.sin(angle - Math.PI / 6));
+                        
+                        // Wing 2
+                        context.moveTo(last.x, last.y);
+                        context.lineTo(last.x - headLen * Math.cos(angle + Math.PI / 6), last.y - headLen * Math.sin(angle + Math.PI / 6));
+                        
+                        context.stroke();
+                        context.beginPath(); 
+                    }
+
                 } else if (el.type === 'rect') {
                     context.rect(el.x, el.y, el.w, el.h);
                     context.stroke();
-                }
+                } 
             } else if (el.type === 'image') {
                 context.shadowBlur = 0;
                 if(el.img) context.drawImage(el.img, el.x, el.y, el.w, el.h);
@@ -544,7 +634,7 @@
             if(newElements.length === 1) { selectedElement = newElements[0]; selectedGroup = []; }
             else { selectedElement = null; selectedGroup = newElements; }
             clipboard = newElements.map(el => deepCloneElement(el));
-            saveCurrentBoard(); render();
+            triggerSave(); scheduleRender();
         }
         function duplicateSelection() { performCopy(); performPaste(); }
 
@@ -567,14 +657,14 @@
                 if (hit) {
                     if (hit.type === 'text' || hit.type === 'image' || hit.type === 'rect') { selectedGroup = []; selectedElement = hit; } 
                     else { selectedElement = null; selectedGroup = [hit]; }
-                    elements = elements.filter(el => el !== hit); elements.push(hit); render(); return;
+                    elements = elements.filter(el => el !== hit); elements.push(hit); scheduleRender(); return;
                 }
                 selectedElement = null; selectedGroup = [];
                 isSelectingBox = true; selectionBoxStart = { x: m.x, y: m.y }; currentSelectionBox = { x: m.x, y: m.y, w: 0, h: 0 };
-                render(); return;
+                scheduleRender(); return;
             }
             if (currentTool === 'eraser') { deleteShapeAt(m.x, m.y); return; }
-            if (currentTool === 'pen' || currentTool === 'laser') {
+            if (currentTool === 'pen' || currentTool === 'laser' || currentTool === 'arrow') {
                 currentDrawingShape = { type: currentTool, points: [{x: m.x, y: m.y}], color: colorPicker.value, width: lineWidthRange.value, opacity: 1.0 };
                 if (currentTool === 'laser') clearTimeout(laserTimer);
             } else if (currentTool === 'rect') {
@@ -585,7 +675,7 @@
         canvas.addEventListener('mousemove', (e) => {
             if ((currentTool === 'pan' || currentTool === 'pan_temp') && isDragging) {
                 cameraOffset.x += e.clientX - dragStartPos.x; cameraOffset.y += e.clientY - dragStartPos.y;
-                dragStartPos = { x: e.clientX, y: e.clientY }; render(); return;
+                dragStartPos = { x: e.clientX, y: e.clientY }; scheduleRender(); return;
             }
             const m = getMousePos(e);
             if(currentTool === 'select' && selectedElement && !isDragging) {
@@ -594,26 +684,38 @@
             if (!isDragging) return;
             const dx = m.x - dragStartPos.x; const dy = m.y - dragStartPos.y;
             if (currentTool === 'select') {
-                if (isSelectingBox) { currentSelectionBox.w = m.x - selectionBoxStart.x; currentSelectionBox.h = m.y - selectionBoxStart.y; render(); return; }
+                if (isSelectingBox) { currentSelectionBox.w = m.x - selectionBoxStart.x; currentSelectionBox.h = m.y - selectionBoxStart.y; scheduleRender(); return; }
                 if (selectedGroup.length > 0) {
                     selectedGroup.forEach(el => { el.x += dx; el.y += dy; if(el.points) el.points.forEach(p => { p.x += dx; p.y += dy; }); });
-                    dragStartPos = {x: m.x, y: m.y}; render(); return;
+                    dragStartPos = {x: m.x, y: m.y}; scheduleRender(); return;
                 }
                 if (selectedElement) {
                     if(resizeHandle) {
                         const min = 20;
+                        const oldH = selectedElement.h;
+                        
                         if(resizeHandle==='br'){selectedElement.w=Math.max(min,selectedElement.w+dx);selectedElement.h=Math.max(min,selectedElement.h+dy);}
                         else if(resizeHandle==='bl'){const nw=selectedElement.w-dx;if(nw>min){selectedElement.x+=dx;selectedElement.w=nw;}selectedElement.h=Math.max(min,selectedElement.h+dy);}
                         else if(resizeHandle==='tr'){const nh=selectedElement.h-dy;if(nh>min){selectedElement.y+=dy;selectedElement.h=nh;}selectedElement.w=Math.max(min,selectedElement.w+dx);}
                         else if(resizeHandle==='tl'){const nw=selectedElement.w-dx;const nh=selectedElement.h-dy;if(nw>min){selectedElement.x+=dx;selectedElement.w=nw;}if(nh>min){selectedElement.y+=dy;selectedElement.h=nh;}}
+                        
+                        // TEXT RESIZE LOGIC
+                        if(selectedElement.type === 'text') {
+                            const ratio = selectedElement.h / oldH;
+                            selectedElement.size = (selectedElement.size || 16) * ratio; /* CHANGED BASE TO 16 */
+                        }
+
                     } else { selectedElement.x += dx; selectedElement.y += dy; }
-                    dragStartPos = {x: m.x, y: m.y}; render(); return;
+                    dragStartPos = {x: m.x, y: m.y}; scheduleRender(); return;
                 }
             }
             if (currentTool === 'eraser') { deleteShapeAt(m.x, m.y); return; }
-            if (currentTool === 'pen' || currentTool === 'laser') currentDrawingShape.points.push({x: m.x, y: m.y});
-            else if (currentTool === 'rect') { currentDrawingShape.w = m.x - currentDrawingShape.x; currentDrawingShape.h = m.y - currentDrawingShape.y; }
-            render();
+            if (currentTool === 'pen' || currentTool === 'laser' || currentTool === 'arrow') currentDrawingShape.points.push({x: m.x, y: m.y});
+            else if (currentTool === 'rect') { 
+                currentDrawingShape.w = m.x - currentDrawingShape.x; 
+                currentDrawingShape.h = m.y - currentDrawingShape.y; 
+            }
+            scheduleRender();
         });
 
         canvas.addEventListener('mouseup', () => {
@@ -624,19 +726,19 @@
                 const by = currentSelectionBox.h > 0 ? currentSelectionBox.y : currentSelectionBox.y + currentSelectionBox.h;
                 const bw = Math.abs(currentSelectionBox.w); const bh = Math.abs(currentSelectionBox.h);
                 selectedGroup = elements.filter(el => {
-                    if (el.type !== 'pen' && el.type !== 'laser') return false; 
+                    if (el.type !== 'pen' && el.type !== 'laser' && el.type !== 'arrow') return false; 
                     const cx = el.x + el.w/2; const cy = el.y + el.h/2;
                     return (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh);
                 });
-                currentSelectionBox = null; render(); return;
+                currentSelectionBox = null; scheduleRender(); return;
             }
-            if(currentTool === 'pan_temp') { currentTool = previousTool || 'select'; setTool(currentTool); saveCurrentBoard(); }
-            if(currentTool === 'pan') { canvas.style.cursor = 'grab'; saveCurrentBoard(); }
+            if(currentTool === 'pan_temp') { currentTool = previousTool || 'select'; setTool(currentTool); triggerSave(); }
+            if(currentTool === 'pan') { canvas.style.cursor = 'grab'; triggerSave(); }
             resizeHandle = null;
             if(currentDrawingShape) {
-                if(currentDrawingShape.type === 'rect' && Math.abs(currentDrawingShape.w) < 5) return;
+                if((currentDrawingShape.type === 'rect') && Math.abs(currentDrawingShape.w) < 5 && Math.abs(currentDrawingShape.h) < 5) return;
                 const finalShape = currentDrawingShape;
-                if(finalShape.type === 'pen' || finalShape.type === 'laser') {
+                if(finalShape.type === 'pen' || finalShape.type === 'laser' || finalShape.type === 'arrow') {
                     let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
                     finalShape.points.forEach(p => { if(p.x < minX) minX = p.x; if(p.x > maxX) maxX = p.x; if(p.y < minY) minY = p.y; if(p.y > maxY) maxY = p.y; });
                     finalShape.x = minX; finalShape.y = minY; finalShape.w = maxX - minX; finalShape.h = maxY - minY;
@@ -646,8 +748,8 @@
                     activeLaserStrokes.push(finalShape); clearTimeout(laserTimer);
                     laserTimer = setTimeout(startFadingGroup, LASER_TIMEOUT);
                 }
-                currentDrawingShape = null; saveCurrentBoard(); render();
-            } else if (currentTool === 'select') { saveCurrentBoard(); }
+                currentDrawingShape = null; triggerSave(); scheduleRender();
+            } else if (currentTool === 'select') { triggerSave(); }
         });
 
         // --- HELPERS ---
@@ -656,104 +758,224 @@
                 const el = elements[i];
                 if(el.type === 'image' || el.type === 'text') continue; 
                 let hit = false;
-                if (el.type === 'rect') hit = (x >= el.x && x <= el.x + el.w && y >= el.y && y <= el.y + el.h);
-                else if (el.type === 'pen' || el.type === 'laser') hit = el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom);
-                if (hit) { elements.splice(i, 1); saveCurrentBoard(); render(); break; }
+                if (el.type === 'rect') {
+                    const bx = el.w > 0 ? el.x : el.x + el.w;
+                    const by = el.h > 0 ? el.y : el.y + el.h;
+                    const bw = Math.abs(el.w); const bh = Math.abs(el.h);
+                    hit = (x >= bx && x <= bx + bw && y >= by && y <= by + bh);
+                }
+                else if (el.type === 'pen' || el.type === 'laser' || el.type === 'arrow') hit = el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom);
+                if (hit) { elements.splice(i, 1); triggerSave(); scheduleRender(); break; }
             }
         }
         function deleteSelected() {
             if (selectedElement) { elements = elements.filter(el => el !== selectedElement); selectedElement = null; }
             if (selectedGroup.length > 0) { elements = elements.filter(el => !selectedGroup.includes(el)); selectedGroup = []; }
-            saveCurrentBoard(); render();
+            triggerSave(); scheduleRender();
         }
+        
         function findElementUnderMouse(x, y) {
+            // Helper for hit detection
+            const isHit = (el) => {
+                if(el.points) { 
+                    return el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom); 
+                } 
+                else { 
+                    const bx = el.w > 0 ? el.x : el.x + el.w;
+                    const by = el.h > 0 ? el.y : el.y + el.h;
+                    const bw = Math.abs(el.w);
+                    const bh = Math.abs(el.h);
+                    const pad = (el.type === 'text') ? 5 : 0; 
+                    return (x >= bx-pad && x <= bx + bw+pad && y >= by-pad && y <= by + bh+pad); 
+                }
+            };
+
+            // Pass 1: Check Foreground (Drawing, Text, Rects)
             for (let i = elements.length - 1; i >= 0; i--) {
-                const el = elements[i];
-                if(el.points) { if (el.points.some(p => Math.hypot(p.x - x, p.y - y) < 10/cameraZoom)) return el; } 
-                else { const pad = (el.type === 'text') ? 5 : 0; if (x >= el.x-pad && x <= el.x + el.w+pad && y >= el.y-pad && y <= el.y + el.h+pad) return el; }
-            } return null;
+                if (elements[i].type !== 'image' && isHit(elements[i])) return elements[i];
+            }
+            
+            // Pass 2: Check Background (Images)
+            for (let i = elements.length - 1; i >= 0; i--) {
+                if (elements[i].type === 'image' && isHit(elements[i])) return elements[i];
+            }
+            return null;
         }
+
         function getHitHandle(el, x, y) {
-            if(el.type === 'pen' || el.type === 'laser') return null;
-            const pad = 5; const s = 15 / cameraZoom; const bx = el.x-pad; const by = el.y-pad; const bw = el.w+(pad*2); const bh = el.h+(pad*2);
-            if(x>=bx-s && x<=bx+s && y>=by-s && y<=by+s) return 'tl'; if(x>=bx+bw-s && x<=bx+bw+s && y>=by-s && y<=by+s) return 'tr';
-            if(x>=bx-s && x<=bx+s && y>=by+bh-s && y<=by+bh+s) return 'bl'; if(x>=bx+bw-s && x<=bx+bw+s && y>=by+bh-s && y<=by+bh+s) return 'br';
+            if(el.type === 'pen' || el.type === 'laser' || el.type === 'arrow') return null;
+            const pad = 5; const s = 15 / cameraZoom; 
+            const bx = el.x-pad; const by = el.y-pad; const bw = el.w+(pad*2); const bh = el.h+(pad*2);
+            if(x>=bx-s && x<=bx+s && y>=by-s && y<=by+s) return 'tl'; 
+            if(x>=bx+bw-s && x<=bx+bw+s && y>=by-s && y<=by+s) return 'tr';
+            if(x>=bx-s && x<=bx+s && y>=by+bh-s && y<=by+bh+s) return 'bl'; 
+            if(x>=bx+bw-s && x<=bx+bw+s && y>=by+bh-s && y<=by+bh+s) return 'br';
             return null;
         }
         function startFadingGroup() {
             const strokes = [...activeLaserStrokes]; activeLaserStrokes = [];
             function step() {
                 let visible = false; strokes.forEach(s => { s.opacity -= 0.02; if(s.opacity > 0) visible = true; });
-                render(); if(visible) requestAnimationFrame(step); else { elements = elements.filter(el => !strokes.includes(el)); render(); }
+                scheduleRender(); if(visible) requestAnimationFrame(step); else { elements = elements.filter(el => !strokes.includes(el)); scheduleRender(); }
             } step();
         }
 
-        // --- TEXT INPUT ---
-        canvas.addEventListener('click', (e) => { if (currentTool === 'text') spawnTextInput(e.clientX, e.clientY, "", 200, 100, colorPicker.value); });
+        // --- NEW AUTO-EXPANDING TEXT INPUT ---
+        canvas.addEventListener('click', (e) => { 
+            if (currentTool === 'text') {
+                spawnTextInput(e.clientX, e.clientY, "", 250, 40, colorPicker.value); 
+            }
+        });
         canvas.addEventListener('dblclick', (e) => {
             const m = getMousePos(e); const hit = findElementUnderMouse(m.x, m.y);
             if (hit && hit.type === 'text') {
-                elements = elements.filter(el => el !== hit); render();
+                elements = elements.filter(el => el !== hit); scheduleRender();
                 const screenX = (hit.x * cameraZoom) + cameraOffset.x; const screenY = (hit.y * cameraZoom) + cameraOffset.y;
                 spawnTextInput(screenX, screenY, hit.text, hit.w * cameraZoom, hit.h * cameraZoom, hit.color);
             }
         });
+        
         function spawnTextInput(screenX, screenY, initialText, w, h, color) {
             const temp = document.getElementById('temp-text-input'); if(temp) temp.remove();
-            const input = document.createElement('textarea'); input.id = 'temp-text-input';
-            input.style.left = screenX + 'px'; input.style.top = screenY + 'px';
-            input.style.width = (w || 200) + "px"; input.style.height = (h || 100) + "px";
-            input.style.color = color; input.value = initialText;
-            document.body.appendChild(input); setTimeout(() => input.focus(), 10);
+            
+            // Create DIV instead of TEXTAREA
+            const input = document.createElement('div'); 
+            input.id = 'temp-text-input';
+            input.contentEditable = true; // Key for auto-expanding
+            
+            input.style.left = screenX + 'px'; 
+            input.style.top = screenY + 'px';
+            input.style.color = color; 
+            input.innerText = initialText;
+
+            // If editing existing text, respect its width initially, else let it grow
+            // We use minWidth to prevent it being invisible
+            if (!initialText) {
+                input.style.minWidth = '50px';
+            }
+
+            document.body.appendChild(input); 
+            
+            // Focus and Select All logic
+            setTimeout(() => { 
+                input.focus();
+                // Move cursor to end
+                const range = document.createRange();
+                const sel = window.getSelection();
+                range.selectNodeContents(input);
+                range.collapse(false);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }, 10);
+            
             const m = getMousePos({clientX: screenX, clientY: screenY});
+            
             const save = () => {
-                if(input.value.trim() !== "") {
-                    elements.push({ type: 'text', text: input.value, x: m.x, y: m.y, color: color, w: parseInt(input.style.width), h: parseInt(input.style.height), size: 24 });
-                    saveCurrentBoard(); render();
-                } if(input.parentNode) input.remove();
+                const textContent = input.innerText;
+                if(textContent.trim() !== "") {
+                    // Capture final dimensions of the DIV
+                    const finalW = input.offsetWidth;
+                    const finalH = input.offsetHeight;
+                    
+                    elements.push({ 
+                        type: 'text', 
+                        text: textContent, 
+                        x: m.x, 
+                        y: m.y, 
+                        color: color, 
+                        w: finalW, 
+                        h: finalH, 
+                        size: 16 
+                    });
+                    triggerSave(); scheduleRender();
+                } 
+                if(input.parentNode) input.remove();
             };
-            input.addEventListener('blur', save); input.addEventListener('click', (ev) => ev.stopPropagation());
+            
+            // Save on click away
+            input.addEventListener('blur', save); 
+            input.addEventListener('click', (ev) => ev.stopPropagation());
         }
 
         // --- SMART MAX QUALITY SAVE ---
         function saveBoard() {
-            if (elements.length === 0) return alert("Empty board!");
+            if (elements.length === 0) return;
             let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
             elements.forEach(el => {
-                if(el.type === 'pen' || el.type === 'laser') { if(el.points) el.points.forEach(p=>{ if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x; if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y; }); } 
+                if(el.type === 'pen' || el.type === 'laser' || el.type === 'arrow') { if(el.points) el.points.forEach(p=>{ if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x; if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y; }); } 
                 else { if(el.x < minX) minX = el.x; if(el.y < minY) minY = el.y; if(el.x+el.w > maxX) maxX = el.x+el.w; if(el.y+el.h > maxY) maxY = el.y+el.h; }
             });
             if(minX === Infinity) { minX=0; maxX=100; minY=0; maxY=100; }
             const pad = 50; const w = (maxX - minX) + pad*2; const h = (maxY - minY) + pad*2;
-            
-            // Smart Scale Logic
-            const MAX_PIXELS = 10000 * 10000; // 100MP Limit
-            const MAX_DIM = 16000; // Browser Limit
-            let scale = 4; // Target Ultra HD
+            const MAX_PIXELS = 10000 * 10000; 
+            const MAX_DIM = 16000; 
+            let scale = 4; 
             while ((w * scale > MAX_DIM || h * scale > MAX_DIM || (w * scale * h * scale) > MAX_PIXELS) && scale > 1) {
-                scale -= 0.5; // Step down if too big
+                scale -= 0.5; 
             }
-
             const tCanvas = document.createElement('canvas');
             tCanvas.width = w * scale; tCanvas.height = h * scale; 
             const tCtx = tCanvas.getContext('2d');
             tCtx.scale(scale, scale); tCtx.translate(-(minX-pad), -(minY-pad));
             tCtx.fillStyle = 'white'; tCtx.fillRect(minX-pad, minY-pad, w, h);
-            elements.forEach(el => drawElement(el, tCtx));
+            
+            // --- DRAW IMAGES (BACKGROUND) ---
+            elements.forEach(el => { if(el.type === 'image') drawElement(el, tCtx); });
+            // --- DRAW REST (FOREGROUND) ---
+            elements.forEach(el => { if(el.type !== 'image') drawElement(el, tCtx); });
+
             const link = document.createElement('a'); link.download = 'whiteboard.png'; link.href = tCanvas.toDataURL(); link.click();
+        }
+
+        // --- DRAG AND DROP (EXTERNAL FILES) ---
+        const dropArea = document.body;
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+        function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+        ['dragenter', 'dragover'].forEach(eventName => { dropArea.addEventListener(eventName, highlight, false); });
+        ['dragleave', 'drop'].forEach(eventName => { dropArea.addEventListener(eventName, unhighlight, false); });
+        function highlight(e) { dropArea.classList.add('drag-active'); }
+        function unhighlight(e) { dropArea.classList.remove('drag-active'); }
+        dropArea.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer; const files = dt.files; handleFiles(files, e.clientX, e.clientY);
+        }
+
+        function handleFiles(files, dropX, dropY) {
+            ([...files]).forEach(file => {
+                if(file.type.startsWith('image/')) {
+                    const reader = new FileReader(); reader.readAsDataURL(file);
+                    reader.onloadend = function() {
+                        const img = new Image(); img.src = reader.result;
+                        img.onload = function() {
+                            const worldPos = { x: (dropX - cameraOffset.x) / cameraZoom, y: (dropY - cameraOffset.y) / cameraZoom };
+                            const scale = Math.min(250/img.width, 1);
+                            elements.push({
+                                type: 'image', img: img,
+                                x: worldPos.x - (img.width*scale)/2, y: worldPos.y - (img.height*scale)/2,
+                                w: img.width * scale, h: img.height * scale
+                            });
+                            triggerSave(); setTool('select'); scheduleRender();
+                        }
+                    }
+                }
+            });
         }
 
         document.getElementById('imageLoader').addEventListener('change', (e) => {
             const r = new FileReader(); r.onload = (evt) => {
                 const img = new Image(); img.onload = () => {
-                    const scale = Math.min(500/img.width, 1);
+                    const scale = Math.min(250/img.width, 1);
                     const cx = (-cameraOffset.x + window.innerWidth/2)/cameraZoom; const cy = (-cameraOffset.y + window.innerHeight/2)/cameraZoom;
                     elements.push({type: 'image', img: img, x: cx-100, y: cy-100, w: img.width*scale, h: img.height*scale});
-                    saveCurrentBoard(); setTool('select');
+                    triggerSave(); setTool('select'); scheduleRender();
                 }; img.src = evt.target.result;
             }; r.readAsDataURL(e.target.files[0]); e.target.value = '';
         });
-        function clearAll() { elements = []; selectedElement = null; selectedGroup = []; render(); }
+
+        function clearAll() { elements = []; selectedElement = null; selectedGroup = []; scheduleRender(); }
         setTool('select');
     </script>
 </body>
